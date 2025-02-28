@@ -10,6 +10,7 @@ This project provides a low-latency video streaming solution between a Raspberry
 - Adjustable video quality settings
 - Connection status monitoring
 - Stream statistics (resolution, frame rate, latency)
+- **Headless mode for Raspberry Pi in RC car applications**
 
 ## Requirements
 
@@ -17,7 +18,7 @@ This project provides a low-latency video streaming solution between a Raspberry
 - Raspberry Pi 5
 - Camera module (5MP)
 - Node.js installed
-- Modern web browser
+- Modern web browser (for setup only, can run headless afterward)
 
 ### Windows PC (Receiver)
 - Windows notebook/PC
@@ -29,7 +30,7 @@ This project provides a low-latency video streaming solution between a Raspberry
 
 ```bash
 # Clone the repository (or download it)
-git clone <repository-url>
+git clone https://github.com/IagoFel98/webRTCpi.git
 cd raspberry-pi-video-streaming
 
 # Install dependencies
@@ -64,6 +65,58 @@ This will start the signaling server on port 3000 and serve the built applicatio
 3. Select "Windows PC (Receiver)"
 4. Connect to the server using the same Room ID as the Raspberry Pi
 
+## Headless Mode for RC Car Applications
+
+For RC car applications where the Raspberry Pi needs to start streaming automatically without a graphical interface:
+
+### Automatic Setup (Recommended)
+
+1. Copy the project to your Raspberry Pi
+2. Run the setup script:
+
+```bash
+cd ~/webRTCpi
+chmod +x raspberry-pi/setup-raspberry-pi.sh
+./raspberry-pi/setup-raspberry-pi.sh
+```
+
+This script will:
+- Install required dependencies
+- Build the project
+- Set up systemd services for auto-start
+- Start the streaming service
+
+### Manual Setup
+
+1. Build the project:
+```bash
+npm run build
+```
+
+2. Copy the systemd service files to the system directory:
+```bash
+sudo cp raspberry-pi/webrtc-stream.service /etc/systemd/system/
+sudo cp raspberry-pi/autostart-chrome.service /etc/systemd/system/
+```
+
+3. Enable and start the services:
+```bash
+sudo systemctl enable webrtc-stream.service
+sudo systemctl enable autostart-chrome.service
+sudo systemctl start webrtc-stream.service
+sudo systemctl start autostart-chrome.service
+```
+
+### Configuration
+
+You can configure the streaming parameters by editing the service files or by setting environment variables:
+
+- `PORT`: The port to run the server on (default: 3000)
+- `ROOM_ID`: The room ID for the WebRTC connection (default: raspberry-pi-stream)
+- `VIDEO_WIDTH`: Video width in pixels (default: 640)
+- `VIDEO_HEIGHT`: Video height in pixels (default: 480)
+- `FRAME_RATE`: Video frame rate (default: 30)
+
 ## Usage
 
 ### Sender (Raspberry Pi)
@@ -94,6 +147,7 @@ To achieve the lowest possible latency (around 50ms):
 - **No video appears**: Ensure the camera is properly connected to the Raspberry Pi
 - **High latency**: Check network conditions, reduce video resolution, ensure both devices are on the same network
 - **Connection issues**: Verify the server is running, check firewall settings, ensure correct IP address is used
+- **Headless mode not working**: Check the systemd service logs with `sudo journalctl -u webrtc-stream.service -f`
 
 ## License
 

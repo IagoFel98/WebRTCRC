@@ -1,0 +1,18 @@
+[Unit]
+Description=Raspberry Pi WebRTC Streaming Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /home/pi/webRTCpi/server/headless-sender.js
+WorkingDirectory=/home/pi/webRTCpi
+Environment=PORT=3000
+Environment=ROOM_ID=raspberry-pi-stream
+Environment=VIDEO_WIDTH=640
+Environment=VIDEO_HEIGHT=480
+Environment=FRAME_RATE=30
+Restart=always
+User=pi
+Group=pi
+
+[Install]
+WantedBy=multi-user.target

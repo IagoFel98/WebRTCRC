@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start:server": "node server/signaling-server.js"
+    "start:server": "node server/signaling-server.js",
+    "start:headless": "node server/headless-sender.js"
   },
   "dependencies": {
     "express": "^4.18.2",
