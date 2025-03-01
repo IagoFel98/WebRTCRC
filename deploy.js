@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -46,7 +47,7 @@ function copyProjectFiles(tempDir) {
   });
 
   // Copy directories
-  const dirsToCopy = ['src', 'server', 'public'];
+  const dirsToCopy = ['src', 'server', 'public', 'raspberry-pi'];
   dirsToCopy.forEach(dir => {
     if (fs.existsSync(dir)) {
       copyDirRecursive(dir, path.join(tempDir, dir));

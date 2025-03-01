@@ -3,9 +3,10 @@ Description=Chromium Browser in Kiosk Mode for WebRTC Streaming
 After=network.target webrtc-stream.service
 
 [Service]
-ExecStart=/usr/bin/chromium-browser --headless --disable-gpu --no-sandbox --autoplay-policy=no-user-gesture-required --use-fake-ui-for-media-stream --kiosk http://localhost:3000/sender-auto.html
+ExecStart=/usr/bin/chromium-browser --headless --disable-gpu --no-sandbox --autoplay-policy=no-user-gesture-required --use-fake-ui-for-media-stream --disable-features=WebRtcHideLocalIpsWithMdns --enable-features=WebRtcUseMinMaxVEADimensions --kiosk http://localhost:3000/sender-auto.html
 Environment=DISPLAY=:0
 Restart=always
+RestartSec=5
 User=pi
 Group=pi
 

@@ -18,10 +18,12 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
     resolution: string;
     frameRate: number;
     latency: number;
+    bitrate: number;
   }>({
     resolution: 'N/A',
     frameRate: 0,
-    latency: 0
+    latency: 0,
+    bitrate: 0
   });
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -29,11 +31,18 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const statsIntervalRef = useRef<number | null>(null);
   const frameCounterRef = useRef<{ count: number, lastTime: number }>({ count: 0, lastTime: Date.now() });
+  const bitrateRef = useRef<{ lastByteCount: number, lastTimestamp: number }>({ lastByteCount: 0, lastTimestamp: Date.now() });
 
   // Connect to signaling server
   const connectToServer = () => {
     try {
-      socketRef.current = io(serverUrl);
+      socketRef.current = io(serverUrl, {
+        transports: ['websocket'],
+        upgrade: false,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        timeout: 10000
+      });
       
       socketRef.current.on('connect', () => {
         setIsConnected(true);
@@ -56,9 +65,38 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
           await createPeerConnection();
           
           if (peerConnectionRef.current) {
+            // Modify SDP for lower latency if needed
+            if (offer.sdp) {
+              let sdp = offer.sdp;
+              
+              // Prioritize video decoding
+              sdp = sdp.replace(/(m=video.*\r\n)/g, '$1a=content:main\r\n');
+              
+              // Set transport-cc for congestion control
+              sdp = sdp.replace(/(m=video.*\r\n)/g, '$1a=rtcp-fb:* transport-cc\r\n');
+              
+              offer.sdp = sdp;
+            }
+            
             await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(offer));
             
-            const answer = await peerConnectionRef.current.createAnswer();
+            const answer = await peerConnectionRef.current.createAnswer({
+              voiceActivityDetection: false
+            });
+            
+            // Modify answer SDP for lower latency
+            if (answer.sdp) {
+              let sdp = answer.sdp;
+              
+              // Set max bitrate
+              sdp = sdp.replace(/(m=video.*\r\n)/g, '$1b=AS:2500\r\n');
+              
+              // Prioritize video
+              sdp = sdp.replace(/(m=video.*\r\n)/g, '$1a=content:main\r\n');
+              
+              answer.sdp = sdp;
+            }
+            
             await peerConnectionRef.current.setLocalDescription(answer);
             
             console.log('Sending answer to:', userId);
@@ -96,7 +134,13 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' }
-        ]
+        ],
+        // Optimize for low latency
+        iceTransportPolicy: 'all',
+        iceCandidatePoolSize: 0,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        sdpSemantics: 'unified-plan'
       });
       
       peerConnectionRef.current = pc;
@@ -109,11 +153,45 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
         }
       };
       
+      // Handle connection state changes
+      pc.onconnectionstatechange = () => {
+        console.log('Connection state:', pc.connectionState);
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setError('WebRTC connection failed or disconnected. Trying to reconnect...');
+          // Try to reconnect
+          setTimeout(() => {
+            if (socketRef.current && socketRef.current.connected) {
+              socketRef.current.emit('join-room', roomId);
+            }
+          }, 2000);
+        }
+      };
+      
       // Handle incoming tracks
       pc.ontrack = (event) => {
         console.log('Received track:', event.track.kind);
         if (videoRef.current && event.streams[0]) {
           videoRef.current.srcObject = event.streams[0];
+          
+          // Set video element properties for low latency
+          videoRef.current.playsInline = true;
+          videoRef.current.muted = true;
+          videoRef.current.autoplay = true;
+          
+          // These attributes help reduce latency
+          videoRef.current.setAttribute('playsinline', 'true');
+          videoRef.current.setAttribute('muted', 'true');
+          videoRef.current.setAttribute('autoplay', 'true');
+          
+          // Reduce buffering
+          if ('mediaSettings' in videoRef.current) {
+            // @ts-ignore - This is a non-standard property
+            videoRef.current.mediaSettings = {
+              lowLatency: true,
+              preferLowLatency: true
+            };
+          }
+          
           setIsReceiving(true);
           
           // Start monitoring stats
@@ -121,6 +199,9 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
           
           // Setup frame counter for FPS calculation
           setupFrameCounter();
+          
+          // Reset bitrate calculation
+          bitrateRef.current = { lastByteCount: 0, lastTimestamp: Date.now() };
         }
       };
       
@@ -195,11 +276,41 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
               }
             }
             
+            // Calculate bitrate
+            if (report.bytesReceived && report.timestamp) {
+              const now = report.timestamp;
+              const bytes = report.bytesReceived;
+              
+              if (bitrateRef.current.lastTimestamp > 0) {
+                const bitrate = 8 * (bytes - bitrateRef.current.lastByteCount) / 
+                  (now - bitrateRef.current.lastTimestamp) * 1000;
+                
+                setStats(prev => ({ ...prev, bitrate: Math.round(bitrate / 1000) })); // kbps
+              }
+              
+              bitrateRef.current.lastByteCount = bytes;
+              bitrateRef.current.lastTimestamp = now;
+            }
+            
             // Get latency if available
             if (report.jitter) {
-              // Estimate latency based on jitter (this is an approximation)
-              const estimatedLatency = Math.round(report.jitter * 1000);
-              setStats(prev => ({ ...prev, latency: estimatedLatency }));
+              // Calculate latency based on jitter and round-trip time
+              let latency = report.jitter * 1000; // Convert to ms
+              
+              // Add network round-trip time if available
+              stats.forEach(s => {
+                if (s.type === 'remote-candidate' && s.roundTripTime) {
+                  latency += s.roundTripTime * 1000;
+                }
+              });
+              
+              // Add decoding time if available
+              if (report.totalDecodeTime && report.framesDecoded && report.framesDecoded > 0) {
+                const avgDecodeTime = (report.totalDecodeTime / report.framesDecoded) * 1000;
+                latency += avgDecodeTime;
+              }
+              
+              setStats(prev => ({ ...prev, latency: Math.round(latency) }));
             }
           }
         });
@@ -253,6 +364,7 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
               ref={videoRef} 
               autoPlay 
               playsInline 
+              muted
               className="w-full h-full object-contain"
             />
           ) : (
@@ -335,7 +447,7 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
           {isReceiving && (
             <div className="mt-4">
               <h3 className="font-medium mb-2">Stream Statistics</h3>
-              <div className="grid grid-cols-3 gap-2 text-sm">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
                 <div className="bg-gray-100 p-2 rounded">
                   <p className="font-medium">Resolution</p>
                   <p>{stats.resolution}</p>
@@ -346,7 +458,13 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
                 </div>
                 <div className="bg-gray-100 p-2 rounded">
                   <p className="font-medium">Latency</p>
-                  <p>{stats.latency} ms</p>
+                  <p className={stats.latency <= 50 ? 'text-green-600 font-bold' : 'text-red-600'}>
+                    {stats.latency} ms
+                  </p>
+                </div>
+                <div className="bg-gray-100 p-2 rounded">
+                  <p className="font-medium">Bitrate</p>
+                  <p>{stats.bitrate} kbps</p>
                 </div>
               </div>
             </div>
@@ -369,6 +487,12 @@ const ReceiverApp: React.FC<ReceiverAppProps> = ({ onBack }) => {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md"
                 disabled={isConnected}
               />
+            </div>
+            
+            <div className="p-3 bg-blue-50 text-blue-800 rounded-md">
+              <p className="text-sm">
+                <strong>Tip for lowest latency:</strong> For sub-50ms latency, ensure both devices are on the same 5GHz WiFi network, keep them physically close, and use Chrome browser.
+              </p>
             </div>
           </div>
         )}

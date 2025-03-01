@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { exec } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -13,9 +14,11 @@ const ROOM_ID = process.env.ROOM_ID || 'raspberry-pi-stream';
 const VIDEO_WIDTH = parseInt(process.env.VIDEO_WIDTH || '640', 10);
 const VIDEO_HEIGHT = parseInt(process.env.VIDEO_HEIGHT || '480', 10);
 const FRAME_RATE = parseInt(process.env.FRAME_RATE || '30', 10);
+const OPTIMIZE_LATENCY = process.env.OPTIMIZE_LATENCY === 'true';
 
 console.log('Starting Raspberry Pi Headless Streaming Service');
 console.log(`Configuration: Room ID: ${ROOM_ID}, Resolution: ${VIDEO_WIDTH}x${VIDEO_HEIGHT}, FPS: ${FRAME_RATE}`);
+console.log(`Latency Optimization: ${OPTIMIZE_LATENCY ? 'Enabled' : 'Disabled'}`);
 
 // Setup Express and Socket.io
 const app = express();
@@ -24,8 +27,40 @@ const io = new Server(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST']
-  }
+  },
+  // Optimize for low latency
+  pingTimeout: 10000,
+  pingInterval: 2000,
+  transports: ['websocket'],
+  allowUpgrades: false
 });
+
+// Optimize network settings for low latency if enabled
+if (OPTIMIZE_LATENCY) {
+  try {
+    // Set network optimization parameters
+    exec('sudo sysctl -w net.ipv4.tcp_fastopen=3', (error) => {
+      if (error) console.error('Failed to set tcp_fastopen:', error);
+    });
+    
+    exec('sudo sysctl -w net.ipv4.tcp_low_latency=1', (error) => {
+      if (error) console.error('Failed to set tcp_low_latency:', error);
+    });
+    
+    exec('sudo sysctl -w net.ipv4.tcp_notsent_lowat=16384', (error) => {
+      if (error) console.error('Failed to set tcp_notsent_lowat:', error);
+    });
+    
+    // Set WiFi power management to off for better performance
+    exec('sudo iwconfig wlan0 power off', (error) => {
+      if (error) console.error('Failed to disable WiFi power management:', error);
+    });
+    
+    console.log('Applied network optimizations for low latency');
+  } catch (err) {
+    console.error('Error applying network optimizations:', err);
+  }
+}
 
 // Serve static files from the dist directory
 app.use(express.static(join(__dirname, '../dist')));
@@ -81,6 +116,13 @@ io.on('connection', (socket) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Signaling server running on port ${PORT}`);
   console.log(`Access from another device using: http://<raspberry-pi-ip>:${PORT}`);
+  
+  // Get and display the Pi's IP address
+  exec('hostname -I | cut -d\' \' -f1', (error, stdout) => {
+    if (!error) {
+      console.log(`Raspberry Pi IP address: ${stdout.trim()}`);
+    }
+  });
   
   // Automatically join the room and start streaming
   console.log('Initializing headless streaming client...');

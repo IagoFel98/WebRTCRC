@@ -32,7 +32,13 @@ const AutoSenderApp: React.FC = () => {
         const serverUrl = getServerUrl();
         console.log(`Connecting to server: ${serverUrl}`);
         
-        socketRef.current = io(serverUrl);
+        socketRef.current = io(serverUrl, {
+          transports: ['websocket'],
+          upgrade: false,
+          reconnectionAttempts: Infinity,
+          reconnectionDelay: 1000,
+          timeout: 10000
+        });
         
         socketRef.current.on('connect', () => {
           console.log('Connected to signaling server with ID:', socketRef.current?.id);
@@ -47,7 +53,7 @@ const AutoSenderApp: React.FC = () => {
         socketRef.current.on('connect_error', (err) => {
           console.error('Connection error:', err);
           // Try to reconnect after a delay
-          setTimeout(connectAndStream, 5000);
+          setTimeout(connectAndStream, 2000);
         });
         
         socketRef.current.on('user-connected', (userId) => {
@@ -85,7 +91,7 @@ const AutoSenderApp: React.FC = () => {
       } catch (err) {
         console.error('Error in connectAndStream:', err);
         // Try to reconnect after a delay
-        setTimeout(connectAndStream, 5000);
+        setTimeout(connectAndStream, 2000);
       }
     };
     
@@ -112,7 +118,13 @@ const AutoSenderApp: React.FC = () => {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' }
-        ]
+        ],
+        // Optimize for low latency
+        iceTransportPolicy: 'all',
+        iceCandidatePoolSize: 0,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        sdpSemantics: 'unified-plan'
       });
       
       peerConnectionsRef.current[userId] = pc;
@@ -120,7 +132,24 @@ const AutoSenderApp: React.FC = () => {
       // Add local stream tracks to peer connection
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => {
-          pc.addTrack(track, localStreamRef.current!);
+          const sender = pc.addTrack(track, localStreamRef.current!);
+          
+          // Set encoding parameters for low latency
+          if (sender.setParameters && sender.getParameters) {
+            const parameters = sender.getParameters();
+            if (parameters.encodings && parameters.encodings.length > 0) {
+              parameters.encodings.forEach(encoding => {
+                encoding.maxBitrate = 2500000; // 2.5 Mbps
+                encoding.maxFramerate = frameRate;
+                encoding.networkPriority = 'high';
+                encoding.priority = 'high';
+                encoding.scaleResolutionDownBy = 1.0;
+              });
+              sender.setParameters(parameters).catch(e => 
+                console.error('Error setting encoding parameters:', e)
+              );
+            }
+          }
         });
       }
       
@@ -132,11 +161,31 @@ const AutoSenderApp: React.FC = () => {
         }
       };
       
-      // Create and send offer
-      const offer = await pc.createOffer({
+      // Create and send offer with low latency options
+      const offerOptions = {
         offerToReceiveAudio: false,
-        offerToReceiveVideo: false
-      });
+        offerToReceiveVideo: false,
+        voiceActivityDetection: false,
+        iceRestart: false
+      };
+      
+      const offer = await pc.createOffer(offerOptions);
+      
+      // Modify SDP for lower latency
+      let sdp = offer.sdp;
+      if (sdp) {
+        // Set max bitrate
+        sdp = sdp.replace(/(m=video.*\r\n)/g, '$1b=AS:2500\r\n');
+        
+        // Disable RTCP (reduces overhead)
+        sdp = sdp.replace(/(a=rtcp-fb.*\r\n)/g, '');
+        
+        // Set transport-cc for congestion control
+        sdp = sdp.replace(/(m=video.*\r\n)/g, '$1a=rtcp-fb:* transport-cc\r\n');
+        
+        // Update the offer with modified SDP
+        offer.sdp = sdp;
+      }
       
       await pc.setLocalDescription(offer);
       
@@ -154,8 +203,30 @@ const AutoSenderApp: React.FC = () => {
       console.log('Requesting camera access with constraints:', videoConstraints);
       
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: videoConstraints,
+        video: {
+          ...videoConstraints,
+          // Additional constraints for low latency
+          facingMode: 'environment', // Use back camera if available
+          resizeMode: 'crop-and-scale'
+        },
         audio: false
+      });
+      
+      // Apply track constraints for low latency
+      stream.getVideoTracks().forEach(track => {
+        const capabilities = track.getCapabilities();
+        const settings: MediaTrackConstraints = {};
+        
+        // Set lowest possible latency mode if available
+        if (capabilities.latencyMode) {
+          settings.latencyMode = 'lowLatency';
+        }
+        
+        // Apply constraints if we have any
+        if (Object.keys(settings).length > 0) {
+          track.applyConstraints(settings)
+            .catch(e => console.error('Error applying track constraints:', e));
+        }
       });
       
       localStreamRef.current = stream;
@@ -179,7 +250,7 @@ const AutoSenderApp: React.FC = () => {
     } catch (err) {
       console.error('Error accessing camera:', err);
       // Try again after a delay
-      setTimeout(startStream, 5000);
+      setTimeout(startStream, 2000);
     }
   };
 
